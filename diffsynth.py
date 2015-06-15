@@ -6,6 +6,12 @@
 import pyaudio, time, sys
 from math import *
 
+def shift_div(v, s):
+    if v < 0:
+        return -(-v >> s)
+    else:
+        return v >> s
+
 class SinSynth():
     def __init__(this, freq):
         this.freq = freq
@@ -15,14 +21,20 @@ class SinSynth():
 
     def synthesize(this, i):
         t = 2 * pi * i * this.freq / this.player.sps
-        return int(64 * sin(t) + 128)
+        return int(64 * sin(t))
 
-def clamp(v):
-    v += 128
+def clamp_unsigned(v):
     if v > 255:
         v = 255
     if v < 0:
         v = 0
+    return v
+
+def clamp_signed(v):
+    if v > 127:
+        v = 127
+    if v < -128:
+        v = -128
     return v
 
 class LizardSynth():
@@ -50,17 +62,90 @@ class LizardSynth():
         v0 = this.ring[i0]
         v1 = this.ring[i1]
         v2 = this.ring[i2]
-        d1 = (v1 - v0) >> 1
-        d2 = (v2 - v1) >> 1
-        dd = (d1 - d2) >> 1
-        v = clamp(-dd)
+        d1 = shift_div(v1 - v0, 0)
+        d2 = shift_div(v2 - v1, 0)
+        dd = shift_div(d1 - d2, 1)
+        v = clamp_signed(-dd)
         this.ring[i0] = v
         this.ptr = i1
         return v
 
 
+class FlatSynth():
+    def __init__(this, shift):
+        this.shift = shift
+
+    def register(this, player):
+        pass
+
+    def synthesize(this, i):
+        return this.shift
+
+class ExpDecaySynth():
+    def __init__(this):
+        this.ticks = 0
+        this.shift = 0
+
+    def register(this, player):
+        this.interval = int(player.nsecs * player.sps) >> 2
+
+    def synthesize(this, i):
+        if this.ticks >= this.interval:
+            this.interval >>= 1
+            this.ticks = 0
+            this.shift += 1
+        this.ticks += 1
+        return this.shift
+
+class AttackDecaySynth():
+    def __init__(this):
+        this.ticks = 0
+        this.shift = 0
+        this.rising = True
+
+    def register(this, player):
+        this.samples = int(player.nsecs * player.sps)
+        this.interval = this.samples >> 2
+
+    def synthesize(this, i):
+        if this.ticks >= this.interval:
+            if this.rising and this.shift <= 0:
+                this.rising = False
+                this.interval = this.samples >> 2
+            else:
+                this.interval >>= 1
+                if this.rising:
+                    this.shift -= 1
+                else:
+                    this.shift += 1
+            this.ticks = 0
+        else:
+            this.ticks += 1
+        return this.shift
+
+class TriangleSynth():
+    def __init__(this):
+        this.ticks = 0
+
+    def register(this, player):
+        this.samples = int(player.nsecs * player.sps)
+        this.interval = this.samples >> 4
+        this.shift = 8
+        print(this.shift)
+
+    def synthesize(this, i):
+        if this.ticks >= this.interval:
+            this.ticks = 0
+            if i >= (this.samples >> 1):
+                this.shift += 1
+            else:
+                this.shift -= 1
+            print(i, this.shift)
+        this.ticks += 1
+        return min(this.shift, 6)
+
 class Player():
-    def __init__(this, sps, synths, nsecs):
+    def __init__(this, sps, synths, nsecs, envelope = None):
         this.sps = sps
         this.pa = pyaudio.PyAudio()
         this.fmt = this.pa.get_format_from_width(1)
@@ -71,9 +156,13 @@ class Player():
                         stream_callback=(lambda *args:this.callback(*args)))
         this.nWritten = 0
         this.lastFrame = int(nsecs * this.sps)
+        this.nsecs = nsecs
         for synth in synths:
             synth.register(this)
         this.synths = synths
+        this.envelope = envelope
+        if envelope:
+            envelope.register(this)
 
     def start(this):
         this.paStream.start_stream()
@@ -98,15 +187,25 @@ class Player():
             for synth in this.synths:
                 v += synth.synthesize(this.nWritten)
             v //= len(this.synths)
+            if this.envelope:
+                e = this.envelope.synthesize(this.nWritten)
+                v = shift_div(v, e)
+            v = clamp_unsigned(v + 128)
             frames.append(v)
             this.nWritten += 1
+        # sys.stdout.buffer.write(bytes(frames))
         return (bytes(frames), pyaudio.paContinue)
 
-#synth = SinSynth(400)
-#synth = LizardSynth([(0, 127), (0.3, 63), (0.6, 31)])
-synth1 = LizardSynth(32, [(0, 127)])
-synth2 = LizardSynth(13, [(0.5, 63)])
-test = Player(1000, [synth1, synth2], 4)
+#synths = [SinSynth(400)]
+synths = [LizardSynth(32, [(0, 127), (0.3, 63), (0.6, 31)])]
+#synth1 = LizardSynth(63, [(0, 127)])
+#synth2 = LizardSynth(13, [(0.5, 63)])
+#synths = [synth1, synth2]
+#ad = FlatSynth(0)
+ad = ExpDecaySynth()
+#ad = AttackDecaySynth()
+#ad = TriangleSynth()
+test = Player(1000, synths, 4, envelope = ad)
 while test.isPlaying():
     print(".", end="")
     sys.stdout.flush()
