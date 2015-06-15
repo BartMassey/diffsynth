@@ -17,9 +17,51 @@ class SinSynth():
         t = 2 * pi * i * this.freq / this.player.sps
         return int(64 * sin(t) + 128)
 
+def clamp(v):
+    v += 128
+    if v > 255:
+        v = 255
+    if v < 0:
+        v = 0
+    return v
+
+class LizardSynth():
+    def __init__(this, ring_size, inits):
+        this.ringSize = ring_size
+        this.inits = inits
+
+    def register(this, player):
+        this.player = player
+        this.ring = [0] * this.ringSize
+        for (i, v) in this.inits:
+            this.ring[int(i * this.ringSize)] = v
+        this.ptr = 0
+
+    def inc(this, ptr):
+        ptr += 1
+        while ptr >= this.ringSize:
+            ptr -= this.ringSize
+        return ptr
+
+    def synthesize(this, i):
+        i0 = this.ptr
+        i1 = this.inc(i0)
+        i2 = this.inc(i1)
+        v0 = this.ring[i0]
+        v1 = this.ring[i1]
+        v2 = this.ring[i2]
+        d1 = (v1 - v0) >> 1
+        d2 = (v2 - v1) >> 1
+        dd = (d1 - d2) >> 1
+        v = clamp(-dd)
+        this.ring[i0] = v
+        this.ptr = i1
+        return v
+
+
 class Player():
-    sps = 1000
-    def __init__(this, synth, nsecs):
+    def __init__(this, sps, synths, nsecs):
+        this.sps = sps
         this.pa = pyaudio.PyAudio()
         this.fmt = this.pa.get_format_from_width(1)
         this.paStream = this.pa.open(format=this.fmt,
@@ -29,8 +71,9 @@ class Player():
                         stream_callback=(lambda *args:this.callback(*args)))
         this.nWritten = 0
         this.lastFrame = int(nsecs * this.sps)
-        synth.register(this)
-        this.synth = synth
+        for synth in synths:
+            synth.register(this)
+        this.synths = synths
 
     def start(this):
         this.paStream.start_stream()
@@ -51,12 +94,19 @@ class Player():
             if this.nWritten >= this.lastFrame:
                 frames += bytearray([128] * (frame_count - i))
                 break
-            frames.append(this.synth.synthesize(this.nWritten))
+            v = 0
+            for synth in this.synths:
+                v += synth.synthesize(this.nWritten)
+            v //= len(this.synths)
+            frames.append(v)
             this.nWritten += 1
         return (bytes(frames), pyaudio.paContinue)
 
-synth = SinSynth(400)
-test = Player(synth, 3)
+#synth = SinSynth(400)
+#synth = LizardSynth([(0, 127), (0.3, 63), (0.6, 31)])
+synth1 = LizardSynth(32, [(0, 127)])
+synth2 = LizardSynth(13, [(0.5, 63)])
+test = Player(1000, [synth1, synth2], 4)
 while test.isPlaying():
     print(".", end="")
     sys.stdout.flush()
