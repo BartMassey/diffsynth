@@ -6,9 +6,20 @@
 import pyaudio, time, sys
 from math import *
 
+class SinSynth():
+    def __init__(this, freq):
+        this.freq = freq
+
+    def register(this, player):
+        this.player = player
+
+    def synthesize(this, i):
+        t = 2 * pi * i * this.freq / this.player.sps
+        return int(64 * sin(t) + 128)
+
 class Player():
     sps = 1000
-    def __init__(this, nsecs, freq):
+    def __init__(this, synth, nsecs):
         this.pa = pyaudio.PyAudio()
         this.fmt = this.pa.get_format_from_width(1)
         this.paStream = this.pa.open(format=this.fmt,
@@ -18,7 +29,8 @@ class Player():
                         stream_callback=(lambda *args:this.callback(*args)))
         this.nWritten = 0
         this.lastFrame = int(nsecs * this.sps)
-        this.freq = freq
+        synth.register(this)
+        this.synth = synth
 
     def start(this):
         this.paStream.start_stream()
@@ -39,12 +51,12 @@ class Player():
             if this.nWritten >= this.lastFrame:
                 frames += bytearray([128] * (frame_count - i))
                 break
-            t = 2 * pi * this.nWritten * this.freq / this.sps
-            frames.append(int(64 * sin(t) + 128))
+            frames.append(this.synth.synthesize(this.nWritten))
             this.nWritten += 1
         return (bytes(frames), pyaudio.paContinue)
 
-test = Player(3, 400)
+synth = SinSynth(400)
+test = Player(synth, 3)
 while test.isPlaying():
     print(".", end="")
     sys.stdout.flush()
