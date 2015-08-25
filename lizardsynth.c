@@ -74,6 +74,12 @@ int main(void) {
     lizard_synth_init_ring(&lizard_ring);
     for (i = 0; i < 1000; i++) {
         sample_t v = lizard_synth(&lizard_ring);
+#ifndef UNCLAMP
+        if (v > 0)
+            v = 127;
+        else if (v < 0)
+            v = -127;
+#endif
         fwrite(&v, sizeof(v), 1, stdout);
     }
     return 0;
