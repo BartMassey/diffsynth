@@ -7,7 +7,7 @@
 # Differential Sound Synthesis
 
 
-import pyaudio, time, sys
+import sounddevice, time, sys
 from math import *
 
 def shift_div(v, s):
@@ -151,13 +151,13 @@ class TriangleSynth():
 class Player():
     def __init__(this, sps, synths, nsecs, envelope = None):
         this.sps = sps
-        this.pa = pyaudio.PyAudio()
-        this.fmt = this.pa.get_format_from_width(1)
-        this.paStream = this.pa.open(format=this.fmt,
-                        channels=1,
-                        rate=this.sps,
-                        output=True,
-                        stream_callback=(lambda *args:this.callback(*args)))
+        this.stream = sounddevice.RawOutputStream(
+            samplerate=this.sps,
+            channels=1,
+            callback=lambda *args: this.callback(*args),
+            blocksize=128,
+            dtype='uint8',
+        )
         this.nWritten = 0
         this.lastFrame = int(nsecs * this.sps)
         this.nsecs = nsecs
@@ -169,24 +169,23 @@ class Player():
             envelope.register(this)
 
     def start(this):
-        this.paStream.start_stream()
+        this.stream.start()
 
     def isPlaying(this):
-        return this.nWritten < this.lastFrame or this.paStream.is_active()
+        return this.nWritten < this.lastFrame or this.stream.active
 
     def close(this):
-        this.paStream.stop_stream()
-        this.paStream.close()
-        this.pa.terminate()
+        this.stream.stop()
+        this.stream.close()
     
-    def callback(this, in_data, frame_count, time_info, status):
+    def callback(this, out_data, frame_count, time_info, status):
         if this.nWritten >= this.lastFrame:
-            return (bytes(), pyaudio.paComplete)
-        frames = bytearray()
+            raise sounddevice.CallbackStop
         for i in range(frame_count):
             if this.nWritten >= this.lastFrame:
-                frames += bytearray([128] * (frame_count - i))
-                break
+                for j in range(i, frame_count):
+                    out_data[j] = bytes([127])
+                return
             v = 0
             for synth in this.synths:
                 v += synth.synthesize(this.nWritten)
@@ -195,10 +194,8 @@ class Player():
                 e = this.envelope.synthesize(this.nWritten)
                 v = shift_div(v, e)
             v = clamp_unsigned(v + 128)
-            frames.append(v)
+            out_data[i] = bytes([v])
             this.nWritten += 1
-        # sys.stdout.buffer.write(bytes(frames))
-        return (bytes(frames), pyaudio.paContinue)
 
 #synths = [SinSynth(400)]
 synths = [LizardSynth(32, [(0, 127), (0.3, 63), (0.6, 31)])]
@@ -210,6 +207,7 @@ ad = ExpDecaySynth()
 #ad = AttackDecaySynth()
 #ad = TriangleSynth()
 test = Player(1000, synths, 4, envelope = ad)
+test.start()
 while test.isPlaying():
     print(".", end="")
     sys.stdout.flush()
